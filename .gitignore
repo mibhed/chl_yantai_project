@@ -23,3 +23,6 @@ streamlit.log
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 输出文件（避免产生大量变更）
+outputs/
