@@ -21,7 +21,7 @@
 - outputs/reports: 报告输出
 
 ## 当前阶段
-第一阶段：项目初始化与基础页面搭建
+V10：统一文件导入与导出（CSV/Excel/TIFF/图片）、TIFF 解析预览、Excel 接入与导出、高清图导出、LightGBM 与 Extra Trees 模型对比。
 
 ## 运行方式
 ```bash

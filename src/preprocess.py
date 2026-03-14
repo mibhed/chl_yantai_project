@@ -1,12 +1,52 @@
+"""
+Data preprocessing module for chlorophyll-a sample generation.
+
+This module generates mock remote sensing reflectance (Rrs) data 
+with derived features for machine learning model training.
+
+Functions:
+    generate_mock_samples: Generate synthetic Rrs and Chl-a samples
+"""
+
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
-BASE_DIR = Path.home() / "projects" / "chl_yantai_project"
+BASE_DIR = Path(__file__).resolve().parents[1]
 SAMPLES_DIR = BASE_DIR / "data" / "samples"
 SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def generate_mock_samples(n_samples: int = 500, seed: int = 42) -> pd.DataFrame:
+    """
+    Generate synthetic remote sensing reflectance samples with Chl-a values.
+    
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of samples to generate. Default is 500.
+    seed : int, optional
+        Random seed for reproducibility. Default is 42.
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing Rrs bands, derived features, and Chl-a values.
+        Columns include:
+        - Rrs bands: Rrs_412, Rrs_443, Rrs_469, Rrs_488, Rrs_531, Rrs_547, 
+                    Rrs_555, Rrs_645, Rrs_667, Rrs_678
+        - Ratio features: ratio_443_555, ratio_488_555, ratio_531_547, ratio_443_488
+        - Difference features: diff_488_555, diff_555_645
+        - Sum features: sum_443_488, sum_555_645
+        - Triple features: tri_443_488_555, tri_488_555_645
+        - Target: chl_a (chlorophyll-a concentration in mg/m³)
+    
+    Examples
+    --------
+    >>> df = generate_mock_samples(n_samples=100, seed=123)
+    >>> print(df.shape)
+    (100, 22)
+    """
     rng = np.random.default_rng(seed)
 
     data = pd.DataFrame({

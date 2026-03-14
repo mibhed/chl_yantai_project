@@ -5,3 +5,8 @@ scikit-learn
 streamlit
 jupyter
 plotly
+xgboost
+lightgbm
+openpyxl
+tifffile
+pytest
