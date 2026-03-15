@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import io
 import sys
+from functools import lru_cache
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -25,6 +26,32 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+@lru_cache(maxsize=32)
+def load_samples_cached():
+    """缓存样本数据加载"""
+    if SAMPLES_PATH.exists():
+        return pd.read_csv(SAMPLES_PATH)
+    return None
+
+
+@lru_cache(maxsize=32)
+def load_model_report_cached():
+    """缓存模型报告加载"""
+    if MODEL_REPORT_PATH.exists():
+        return pd.read_csv(MODEL_REPORT_PATH)
+    return None
+
+
+@lru_cache(maxsize=32)
+def load_predictions_cached():
+    """缓存预测结果加载"""
+    if PRED_PATH.exists():
+        return pd.read_csv(PRED_PATH)
+    return None
+
+
 def ensure_analysis_outputs(region: str, year: int, month: int, model: str = "RF", progress_bar=None, status_text=None, force_regenerate: bool = False):
     """如果当前区域/年份/月的关键输出不存在，则自动生成。使用选定的模型进行预测。"""
     annual_summary_path = REPORT_DIR / f"annual_summary_{region}_{year}_{model}.csv"
@@ -381,8 +408,8 @@ with c4:
 st.markdown("---")
 
 # ========= 标签页 =========
-tab1, tab_import, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["首页总览", "文件导入与导出", "模型结果", "验证图", "样本预览", "空间分布与区域统计", "多区域/年度对比"]
+tab1, tab_import, tab_tiff, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["🏠 首页总览", "📥 数据导入", "🖼️ 卫星影像", "📊 样本预览", "🤖 模型训练", "📈 模型结果", "🗺️ 空间分析", "🔄 多维对比"]
 )
 
 with tab1:
@@ -539,6 +566,270 @@ with tab_import:
         with open(ERROR_HIST_PATH, "rb") as f:
             st.download_button("下载误差分布图 PNG", f, file_name=f"best_model_error_hist_dpi{dpi_export}.png", mime="image/png", key="dl_hist_export")
 
+# ========= 卫星影像处理 =========
+with tab_tiff:
+    st.markdown('<div class="section-title">卫星影像处理</div>', unsafe_allow_html=True)
+    st.markdown("""
+    上传卫星遥感影像（TIFF格式），系统将自动提取Rrs波段并计算派生特征，
+    生成可用于模型训练或预测的样本数据。
+    """)
+    
+    MODIS_BAND_OPTIONS = [
+        "Rrs_412", "Rrs_443", "Rrs_469", "Rrs_488", 
+        "Rrs_531", "Rrs_547", "Rrs_555", "Rrs_645", 
+        "Rrs_667", "Rrs_678"
+    ]
+    
+    with st.expander("📌 波段映射配置", expanded=False):
+        st.markdown("### 设置各波段对应的影像通道")
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            band_0 = st.selectbox("波段 1 (Rrs_412)", MODIS_BAND_OPTIONS, index=0, key="band_0")
+            band_1 = st.selectbox("波段 2 (Rrs_443)", MODIS_BAND_OPTIONS, index=1, key="band_1")
+            band_2 = st.selectbox("波段 3 (Rrs_469)", MODIS_BAND_OPTIONS, index=2, key="band_2")
+            band_3 = st.selectbox("波段 4 (Rrs_488)", MODIS_BAND_OPTIONS, index=3, key="band_3")
+            band_4 = st.selectbox("波段 5 (Rrs_531)", MODIS_BAND_OPTIONS, index=4, key="band_4")
+        with col_b2:
+            band_5 = st.selectbox("波段 6 (Rrs_547)", MODIS_BAND_OPTIONS, index=5, key="band_5")
+            band_6 = st.selectbox("波段 7 (Rrs_555)", MODIS_BAND_OPTIONS, index=6, key="band_6")
+            band_7 = st.selectbox("波段 8 (Rrs_645)", MODIS_BAND_OPTIONS, index=7, key="band_7")
+            band_8 = st.selectbox("波段 9 (Rrs_667)", MODIS_BAND_OPTIONS, index=8, key="band_8")
+            band_9 = st.selectbox("波段 10 (Rrs_678)", MODIS_BAND_OPTIONS, index=9, key="band_9")
+        
+        band_mapping = {
+            band_0: 0, band_1: 1, band_2: 2, band_3: 3, band_4: 4,
+            band_5: 5, band_6: 6, band_7: 7, band_8: 8, band_9: 9
+        }
+        st.caption(f"当前映射: {band_mapping}")
+    
+    st.markdown("### 📤 上传卫星影像")
+    tiff_file = st.file_uploader(
+        "选择TIFF格式的卫星影像文件",
+        type=["tif", "tiff"],
+        key="tiff_uploader"
+    )
+    
+    if tiff_file is not None:
+        st.success(f"已选择文件: {tiff_file.name} ({(tiff_file.size / 1024 / 1024):.2f} MB)")
+        
+        with st.expander("🔍 影像质量检查", expanded=True):
+            check_quality_btn = st.button("🔎 检查影像质量", key="check_quality_btn")
+            
+            if check_quality_btn:
+                try:
+                    import tempfile
+                    import os
+                    from src.image_quality import check_tiff_quality
+                    
+                    quality_progress = st.progress(0)
+                    quality_status = st.empty()
+                    
+                    quality_status.text("正在保存临时文件...")
+                    quality_progress.progress(20)
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as tmp_file:
+                        tmp_file.write(tiff_file.getvalue())
+                        tmp_path = tmp_file.name
+                    
+                    try:
+                        quality_status.text("正在检查影像质量...")
+                        quality_progress.progress(50)
+                        
+                        report = check_tiff_quality(tmp_path)
+                        
+                        quality_progress.progress(80)
+                        quality_status.text("检查完成!")
+                        quality_progress.progress(100)
+                        
+                        if report["overall_passed"]:
+                            st.success("✅ 影像质量检查通过")
+                        else:
+                            st.warning("⚠️ 影像质量检查发现问题")
+                        
+                        meta = report.get("metadata", {}).get("stats", {})
+                        if meta:
+                            col_q1, col_q2, col_q3 = st.columns(3)
+                            with col_q1:
+                                st.metric("影像宽度", f"{meta.get('image_width', 'N/A')} px")
+                            with col_q2:
+                                st.metric("影像高度", f"{meta.get('image_height', 'N/A')} px")
+                            with col_q3:
+                                st.metric("文件大小", f"{meta.get('file_size_mb', 0):.2f} MB")
+                        
+                        band = report.get("band_data", {}).get("stats", {})
+                        if band:
+                            col_b1, col_b2 = st.columns(2)
+                            with col_b1:
+                                st.metric("波段数量", band.get("n_bands", "N/A"))
+                            with col_b2:
+                                st.metric("有效像元比例", f"{band.get('valid_ratio', 0)*100:.1f}%")
+                        
+                        if report.get("anomalies"):
+                            anomaly = report["anomalies"].get("stats", {})
+                            if anomaly:
+                                col_a1, col_a2 = st.columns(2)
+                                with col_a1:
+                                    st.metric("异常值数量", anomaly.get("anomaly_count", 0))
+                                with col_a2:
+                                    st.metric("异常值比例", f"{anomaly.get('anomaly_ratio', 0)*100:.2f}%")
+                        
+                        crs_info = report.get("crs", {}).get("stats", {})
+                        if crs_info:
+                            st.markdown("#### 🌍 坐标系统信息")
+                            col_c1, col_c2 = st.columns(2)
+                            with col_c1:
+                                st.metric("坐标系类型", crs_info.get("crs_type", "N/A"))
+                            with col_c2:
+                                st.metric("EPSG代码", crs_info.get("crs_epsg", "N/A"))
+                            
+                            coord_sys = crs_info.get("coordinate_system", "N/A")
+                            st.info(f"📍 坐标系统: {coord_sys}")
+                            
+                            col_r1, col_r2 = st.columns(2)
+                            with col_r1:
+                                st.metric("分辨率X", f"{crs_info.get('resolution_x', 0):.6f}")
+                            with col_r2:
+                                st.metric("分辨率Y", f"{crs_info.get('resolution_y', 0):.6f}")
+                            
+                            bounds = report.get("crs", {}).get("stats", {})
+                            if bounds:
+                                st.markdown("**影像范围:**")
+                                st.code(f"经度: {bounds.get('bounds_left', 0):.4f} ~ {bounds.get('bounds_right', 0):.4f}\n纬度: {bounds.get('bounds_bottom', 0):.4f} ~ {bounds.get('bounds_top', 0):.4f}")
+                        else:
+                            st.warning("⚠️ 无法获取坐标系统信息（rasterio未安装或影像无坐标系）")
+                        
+                        if report.get("errors"):
+                            st.error("错误:")
+                            for err in report["errors"]:
+                                st.write(f"- [{err['category']}] {err['message']}")
+                        
+                        if report.get("warnings"):
+                            st.warning("警告:")
+                            for warn in report["warnings"]:
+                                st.write(f"- [{warn['category']}] {warn['message']}")
+                                
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                            
+                except Exception as e:
+                    st.error(f"质量检查失败: {str(e)}")
+    
+    col_proc1, col_proc2 = st.columns([1, 1])
+    with col_proc1:
+        sampling_rate = st.slider("采样率", min_value=1, max_value=1000, value=100, 
+                                  help="数值越大，采样越稀疏，处理速度越快")
+    with col_proc2:
+        calculate_features = st.checkbox("计算派生特征", value=True,
+                                         help="计算波段比值、差值等派生特征")
+    
+    process_tiff_button = st.button("🔄 处理影像", type="primary", key="process_tiff_btn")
+    
+    if tiff_file is not None:
+        st.success(f"已选择文件: {tiff_file.name} ({(tiff_file.size / 1024 / 1024):.2f} MB)")
+        
+        if process_tiff_button:
+            try:
+                import tempfile
+                import os
+                from src.raster_processor import process_tiff_to_samples, read_tiff, extract_rrs_bands, calculate_derived_features
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                status_text.text("正在保存上传文件... 10%")
+                progress_bar.progress(10)
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".tif") as tmp_file:
+                    tmp_file.write(tiff_file.getvalue())
+                    tmp_path = tmp_file.name
+                
+                try:
+                    status_text.text("正在读取影像... 20%")
+                    progress_bar.progress(20)
+                    
+                    img, meta = read_tiff(tmp_path)
+                    st.info(f"影像信息: {meta['shape']}, 数据类型: {meta['dtype']}")
+                    
+                    status_text.text("正在提取波段... 40%")
+                    progress_bar.progress(40)
+                    
+                    rrs_bands = extract_rrs_bands(img, band_mapping)
+                    
+                    status_text.text("正在计算派生特征... 60%")
+                    progress_bar.progress(60)
+                    
+                    if calculate_features:
+                        features = calculate_derived_features(rrs_bands)
+                        st.success(f"提取到 {len(rrs_bands)} 个波段，{len(features)} 个派生特征")
+                    else:
+                        st.success(f"提取到 {len(rrs_bands)} 个波段")
+                    
+                    status_text.text("正在处理像元数据... 80%")
+                    progress_bar.progress(80)
+                    
+                    df = process_tiff_to_samples(
+                        tmp_path, 
+                        band_mapping=band_mapping,
+                        sampling_rate=sampling_rate,
+                        calculate_features=calculate_features
+                    )
+                    
+                    status_text.text("处理完成! 90%")
+                    progress_bar.progress(90)
+                    
+                    st.markdown("### 📊 处理结果预览")
+                    st.dataframe(df.head(20), use_container_width=True)
+                    
+                    col_stats1, col_stats2 = st.columns(2)
+                    with col_stats1:
+                        st.metric("像元总数", len(df))
+                        st.metric("特征数量", len(df.columns))
+                    with col_stats2:
+                        st.metric("数据大小", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+                    
+                    st.markdown("### 📋 统计摘要")
+                    st.dataframe(df.describe(), use_container_width=True)
+                    
+                    status_text.text("处理完成! 100%")
+                    progress_bar.progress(100)
+                    
+                    st.markdown("### 💾 下载处理结果")
+                    csv_buffer = df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "📥 下载CSV文件",
+                        csv_buffer,
+                        file_name=f"processed_{tiff_file.name.replace('.tif', '.csv')}",
+                        mime="text/csv"
+                    )
+                    
+                    if "chl_a" not in df.columns:
+                        st.warning("⚠️ 注意: 当前数据中没有chl_a列（叶绿素a浓度）。如需训练模型，请确保影像中包含叶绿素a数据，或使用已有标签的数据进行训练。")
+                    
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                        
+            except Exception as e:
+                st.error(f"处理失败: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+    
+    else:
+        st.info("👆 请上传TIFF格式的卫星影像文件")
+        st.markdown("""
+        ### 📖 支持的格式
+        - GeoTIFF (.tif, .tiff)
+        - 多波段TIFF
+        
+        ### 🔧 处理流程
+        1. 上传TIFF影像文件
+        2. 配置波段映射（将影像通道映射到Rrs波段）
+        3. 设置采样率（控制处理数据量）
+        4. 点击"处理影像"按钮
+        5. 下载处理后的CSV数据
+        """)
+
 with tab2:
     st.markdown('<div class="section-title">模型结果</div>', unsafe_allow_html=True)
     if MODEL_REPORT_PATH.exists():
@@ -570,16 +861,100 @@ with tab2:
             file_name="model_comparison.csv",
             mime="text/csv"
         )
-        buf_xlsx = io.BytesIO()
-        with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as w:
-            results_df.to_excel(w, sheet_name="模型对比", index=False)
-            if PRED_PATH.exists():
-                pred_df = pd.read_csv(PRED_PATH)
-                pred_df.to_excel(w, sheet_name="预测结果", index=False)
-        buf_xlsx.seek(0)
-        st.download_button("下载 Excel（模型对比 + 预测结果）", buf_xlsx, file_name="model_comparison_and_predictions.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_excel_tab2")
-    else:
-        st.warning("尚未找到模型训练结果文件，请先运行 python src/train.py 或在「文件导入与导出」中上传 CSV/Excel 后训练。")
+    
+    st.markdown("---")
+    st.markdown('<div class="section-title">🗂️ 模型管理</div>', unsafe_allow_html=True)
+    
+    MODEL_DIR = BASE_DIR / "outputs" / "models"
+    
+    try:
+        from src.model_manager import ModelManager, cross_validate_model, compare_models
+        manager = ModelManager(MODEL_DIR)
+        
+        with st.expander("📋 已保存的模型列表", expanded=True):
+            models_df = manager.list_models()
+            if not models_df.empty:
+                st.dataframe(models_df, use_container_width=True)
+                
+                col_del1, col_del2 = st.columns([1, 1])
+                with col_del1:
+                    delete_model_name = st.selectbox("选择模型", models_df["模型名称"].unique(), key="delete_model")
+                with col_del2:
+                    if st.button("🗑️ 删除模型", key="delete_model_btn"):
+                        try:
+                            manager.delete_model(delete_model_name)
+                            st.success(f"已删除模型: {delete_model_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"删除失败: {str(e)}")
+            else:
+                st.info("暂无保存的模型")
+        
+        with st.expander("➕ 训练并保存模型", expanded=False):
+            train_save_model = st.selectbox(
+                "选择要训练的模型", 
+                ["MLR", "RF", "GP", "ET", "XGB", "LGB"],
+                key="train_save_model"
+            )
+            train_cv_folds = st.slider("交叉验证折数", 3, 10, 5, key="train_cv_folds")
+            
+            if st.button("🚀 训练并保存模型", key="train_save_btn"):
+                try:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    status_text.text("正在读取数据... 10%")
+                    progress_bar.progress(10)
+                    
+                    if SAMPLES_PATH.exists():
+                        df = pd.read_csv(SAMPLES_PATH)
+                    else:
+                        st.error("样本文件不存在")
+                        raise Exception("样本文件不存在")
+                    
+                    status_text.text(f"正在训练 {train_save_model} 模型... 40%")
+                    progress_bar.progress(40)
+                    
+                    from src.train import train_single_model
+                    pipeline, feature_cols = train_single_model(df, model_name=train_save_model)
+                    
+                    status_text.text("正在进行交叉验证... 70%")
+                    progress_bar.progress(70)
+                    
+                    X = df[feature_cols].values
+                    y = df["chl_a"].values
+                    cv_results = cross_validate_model(pipeline, X, y, cv=train_cv_folds)
+                    
+                    status_text.text("正在保存模型... 90%")
+                    progress_bar.progress(90)
+                    
+                    model_path = manager.save_model(
+                        pipeline=pipeline,
+                        model_name=train_save_model,
+                        feature_cols=feature_cols,
+                        metrics={
+                            "R2": cv_results["R2"],
+                            "RMSE": cv_results["RMSE"],
+                            "MAE": cv_results.get("MAE", 0),
+                            "Bias": cv_results.get("Bias", 0)
+                        },
+                        metadata={
+                            "n_samples": len(df),
+                            "cv_folds": train_cv_folds,
+                            "n_features": len(feature_cols)
+                        }
+                    )
+                    
+                    progress_bar.progress(100)
+                    status_text.text("训练完成! 100%")
+                    
+                    st.success(f"模型已保存: {model_path.name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"训练失败: {str(e)}")
+        
+    except Exception as e:
+        st.warning(f"模型管理功能暂时不可用: {str(e)}")
 
 with tab3:
     st.markdown('<div class="section-title">最佳模型验证图</div>', unsafe_allow_html=True)
