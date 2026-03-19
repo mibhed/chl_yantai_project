@@ -28,11 +28,34 @@ try:
     from src.analysis import load_regions as _load_regions_from_src
     from src.image_quality import check_tiff_metadata
     from src.train import run_training
+    from src.satellite_converter import SatelliteImageValidator, convert_satellite_to_standard, batch_convert_directory
+    from src.modis_l2_reader import MODISL2Reader, read_modis_l2, get_yantai_region
+    from src.chla_predictor import (
+        retrieve_chla, auto_train_from_samples, train_chla_model,
+        predict_chla_map, save_chla_tiff, save_chla_preview_png,
+        generate_chla_statistics, compute_rrs_features, build_model_pipeline
+    )
+    from src.preprocess import generate_mock_samples
 except Exception as e:
     print(f"Warning: Could not import from src: {e}")
     _load_regions_from_src = None
     check_tiff_metadata = None
     run_training = None
+    SatelliteImageValidator = None
+    convert_satellite_to_standard = None
+    batch_convert_directory = None
+    MODISL2Reader = None
+    read_modis_l2 = None
+    get_yantai_region = None
+    retrieve_chla = None
+    auto_train_from_samples = None
+    train_chla_model = None
+    predict_chla_map = None
+    save_chla_tiff = None
+    generate_chla_statistics = None
+    compute_rrs_features = None
+    build_model_pipeline = None
+    generate_mock_samples = None
 
 def load_regions():
     """加载区域定义，优先使用本地JSON文件"""
@@ -83,6 +106,18 @@ class RegionRequest(BaseModel):
 class TrainingRequest(BaseModel):
     model_type: str = "RF"
     cv_folds: int = 5
+    use_synthetic: bool = True
+
+
+class ChlaRetrieveRequest(BaseModel):
+    satellite_type: str = "MODIS"
+    model_type: str = "RF"
+    qa_max: int = 1
+    use_synthetic_model: bool = True
+    lon_min: Optional[float] = None
+    lon_max: Optional[float] = None
+    lat_min: Optional[float] = None
+    lat_max: Optional[float] = None
 
 
 class AnalysisResponse(BaseModel):
@@ -162,6 +197,8 @@ async def upload_samples(file: UploadFile = File(...)):
 
             columns = list(df.columns)
             row_count = len(df)
+            print(f"[DEBUG] Samples uploaded: {file.filename}, rows: {row_count}, columns: {columns}")
+
             return {
                 "success": True,
                 "message": "文件上传成功",
@@ -174,11 +211,13 @@ async def upload_samples(file: UploadFile = File(...)):
             }
         except Exception as e:
             file_path.unlink(missing_ok=True)
+            print(f"[ERROR] Failed to read samples file: {str(e)}")
             raise HTTPException(status_code=400, detail=f"文件格式错误: {str(e)}")
 
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[ERROR] Upload samples error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -198,15 +237,13 @@ async def upload_tiff(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        quality_result = check_tiff_metadata(file_path)
-
+        # 简化返回，不进行元数据检查
         return {
             "success": True,
             "message": "TIFF文件上传成功",
             "data": {
                 "filename": file.filename,
-                "path": str(file_path),
-                "quality": quality_result.get_summary()
+                "path": str(file_path)
             }
         }
 
@@ -214,9 +251,197 @@ async def upload_tiff(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/satellite/validate")
+async def validate_satellite_image(file: UploadFile = File(...)):
+    """验证卫星影像格式并识别卫星类型"""
+    try:
+        if SatelliteImageValidator is None:
+            raise HTTPException(status_code=500, detail="卫星验证模块不可可用，请检查依赖安装")
+
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in ['.tif', '.tiff']:
+            raise HTTPException(status_code=400, detail="仅支持TIFF文件")
+
+        upload_dir = BASE_DIR / "data" / "temp"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = upload_dir / f"validate_{uuid.uuid4().hex[:8]}{suffix}"
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        try:
+            print(f"[DEBUG] Validating satellite image: {file_path}")
+            validator = SatelliteImageValidator(file_path)
+            validation_result = validator.validate()
+            print(f"[DEBUG] Validation result: {validation_result}")
+
+            return {
+                "success": True,
+                "message": "影像验证完成",
+                "data": validation_result
+            }
+        except Exception as e:
+            print(f"[ERROR] Validation error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"影像验证失败: {str(e)}")
+        finally:
+            file_path.unlink(missing_ok=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Satellite validation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/satellite/convert")
+async def convert_satellite_image(
+    file: UploadFile = File(...),
+    satellite_type: Optional[str] = Form(None),
+    target_resolution: Optional[float] = Form(None),
+    resampling_method: str = Form("nearest")
+):
+    """转换卫星影像到标准格式"""
+    try:
+        if convert_satellite_to_standard is None:
+            raise HTTPException(status_code=500, detail="卫星转换模块不可用，请检查依赖安装")
+
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in ['.tif', '.tiff']:
+            raise HTTPException(status_code=400, detail="仅支持TIFF文件")
+
+        upload_dir = BASE_DIR / "data" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = upload_dir / f"input_{uuid.uuid4().hex[:8]}{suffix}"
+        output_path = upload_dir / f"converted_{uuid.uuid4().hex[:8]}.tif"
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        try:
+            print(f"[DEBUG] Converting satellite image: {file.filename}")
+            img, metadata = convert_satellite_to_standard(
+                file_path,
+                satellite_type=satellite_type,
+                output_path=output_path,
+                target_resolution=target_resolution,
+                resampling_method=resampling_method
+            )
+            print(f"[DEBUG] Conversion successful: {metadata}")
+
+            return {
+                "success": True,
+                "message": "影像转换成功",
+                "data": {
+                    "original_file": file.filename,
+                    "converted_file": output_path.name,
+                    "satellite_type": metadata["satellite_type"],
+                    "shape": list(metadata["shape"]) if hasattr(metadata["shape"], '__iter__') else metadata["shape"],
+                    "dtype": metadata["dtype"],
+                    "output_path": str(output_path),
+                    "download_url": f"/api/satellite/download/{output_path.name}"
+                }
+            }
+        except Exception as e:
+            output_path.unlink(missing_ok=True)
+            print(f"[ERROR] Conversion failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"影像转换失败: {str(e)}")
+        finally:
+            file_path.unlink(missing_ok=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Convert satellite error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/satellite/download/{filename}")
+async def download_converted_image(filename: str):
+    """下载转换后的影像文件"""
+    try:
+        upload_dir = BASE_DIR / "data" / "uploads"
+        file_path = upload_dir / filename
+        
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="image/tiff"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/satellite/batch-convert")
+async def batch_convert_satellite_images(
+    files: List[UploadFile] = File(...),
+    satellite_type: Optional[str] = Form(None),
+    target_resolution: Optional[float] = Form(None)
+):
+    """批量转换多个卫星影像"""
+    try:
+        if batch_convert_directory is None:
+            raise HTTPException(status_code=500, detail="批量转换模块不可用")
+        
+        temp_dir = BASE_DIR / "data" / "temp" / f"batch_{uuid.uuid4().hex[:8]}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_dir = BASE_DIR / "data" / "uploads" / f"batch_output_{uuid.uuid4().hex[:8]}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        results = []
+        
+        try:
+            for file in files:
+                suffix = Path(file.filename).suffix.lower()
+                if suffix not in ['.tif', '.tiff']:
+                    results.append({
+                        "filename": file.filename,
+                        "status": "failed",
+                        "error": "仅支持TIFF文件"
+                    })
+                    continue
+                
+                file_path = temp_dir / file.filename
+                with open(file_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+            
+            results = batch_convert_directory(
+                temp_dir,
+                output_dir,
+                satellite_type=satellite_type
+            )
+            
+            return {
+                "success": True,
+                "message": f"批量转换完成，共处理{len(results)}个文件",
+                "data": {
+                    "total_files": len(results),
+                    "successful": sum(1 for r in results if r["status"] == "success"),
+                    "failed": sum(1 for r in results if r["status"] == "failed"),
+                    "results": results,
+                    "output_directory": str(output_dir)
+                }
+            }
+            
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/training")
 async def train_model(request: TrainingRequest, background_tasks: BackgroundTasks):
-    """训练机器学习模型"""
+    """训练机器学习模型（支持合成数据自动生成）"""
     try:
         if run_training is None:
             return {
@@ -224,42 +449,53 @@ async def train_model(request: TrainingRequest, background_tasks: BackgroundTask
                 "message": "训练模块不可用",
                 "data": None
             }
-        
+
         samples_path = BASE_DIR / "data" / "samples" / "mock_rrs_chla_samples.csv"
-        
+
         sample_files = list((BASE_DIR / "data" / "samples").glob("samples_*.csv"))
-        if sample_files:
+        # 排除 mock 文件，除非只有 mock 文件
+        real_files = [f for f in sample_files if "mock" not in f.name]
+        if real_files:
+            samples_path = real_files[0]
+        elif sample_files:
             samples_path = sample_files[0]
-        
-        if not samples_path.exists():
-            return {
-                "success": False,
-                "message": "请先上传样本数据",
-                "data": None
-            }
-        
-        df = pd.read_csv(samples_path)
-        
+
+        use_synthetic = request.use_synthetic
+
+        # 如果没有样本数据且允许使用合成数据，自动生成
+        if not samples_path.exists() or use_synthetic:
+            if generate_mock_samples is None:
+                return {
+                    "success": False,
+                    "message": "无法生成合成数据",
+                    "data": None
+                }
+            df = generate_mock_samples(n_samples=1000, seed=42)
+            samples_path = BASE_DIR / "data" / "samples" / "mock_rrs_chla_samples.csv"
+            df.to_csv(samples_path, index=False)
+        else:
+            df = pd.read_csv(samples_path)
+
         if 'chl_a' not in df.columns:
             return {
                 "success": False,
                 "message": "样本数据缺少 'chl_a' 目标列",
                 "data": None
             }
-        
+
         report_dir = BASE_DIR / "outputs" / "reports"
         figure_dir = BASE_DIR / "outputs" / "figures"
         report_dir.mkdir(parents=True, exist_ok=True)
         figure_dir.mkdir(parents=True, exist_ok=True)
-        
+
         results_df, pred_df, best_model = run_training(
-            df, 
-            report_dir=report_dir, 
+            df,
+            report_dir=report_dir,
             figure_dir=figure_dir
         )
-        
+
         results_list = results_df.to_dict(orient="records")
-        
+
         return {
             "success": True,
             "message": f"模型训练完成，最佳模型: {best_model}",
@@ -530,6 +766,280 @@ async def health_check():
         "version": "1.0.1",
         "uptime": "N/A",
         "code_version": "2026-03-15-v2"
+    }
+
+
+# ============================================================
+# MODIS L2 + Chl-a 反演相关接口
+# ============================================================
+
+@app.post("/api/modis/read")
+async def api_read_modis_l2(
+    file: UploadFile = File(...),
+    lon_min: Optional[float] = Form(None),
+    lon_max: Optional[float] = Form(None),
+    lat_min: Optional[float] = Form(None),
+    lat_max: Optional[float] = Form(None),
+    qa_max: int = Form(1),
+):
+    """
+    读取 MODIS L2 文件（NetCDF/HDF5）并可选按区域和质量过滤。
+
+    Parameters
+    ----------
+    file : UploadFile
+        MODIS L2 文件 (.nc 或 .hdf/.h5)
+    lon_min/lon_max/lat_min/lat_max : float, optional
+        区域经纬度裁剪范围
+    qa_max : int
+        最大 QA 值（默认1，只保留高质量像元）
+
+    Returns
+    -------
+    JSON
+        波段列表、影像尺寸、经纬度范围、统计信息
+    """
+    if MODISL2Reader is None:
+        raise HTTPException(status_code=500, detail="MODIS L2 读取模块不可用")
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ['.nc', '.hdf', '.h5', '.hdf4']:
+        raise HTTPException(status_code=400, detail="仅支持 .nc / .hdf / .h5 格式")
+
+    upload_dir = BASE_DIR / "data" / "temp"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    file_path = upload_dir / f"modis_{uuid.uuid4().hex[:8]}{suffix}"
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        lon_range = (lon_min, lon_max) if lon_min is not None and lon_max is not None else None
+        lat_range = (lat_min, lat_max) if lat_min is not None and lat_max is not None else None
+
+        with MODISL2Reader(file_path) as reader:
+            data = reader.read_all()
+
+        # 按区域裁剪
+        if lon_range and lat_range:
+            from src.modis_l2_reader import clip_to_region
+            data = clip_to_region(data, lon_range, lat_range)
+
+        # 按质量过滤
+        if qa_max is not None and data.get("qa") is not None:
+            from src.modis_l2_reader import filter_by_qa
+            data = filter_by_qa(data, qa_max)
+
+        # 波段统计
+        band_stats = {}
+        for band, arr in data.get("rrs_bands", {}).items():
+            valid = arr[~np.isnan(arr)]
+            if len(valid) > 0:
+                band_stats[band] = {
+                    "mean": round(float(np.nanmean(arr)), 6),
+                    "min": round(float(np.nanmin(arr)), 6),
+                    "max": round(float(np.nanmax(arr)), 6),
+                    "coverage": round(float(np.sum(~np.isnan(arr)) / arr.size * 100), 1),
+                }
+
+        result = {
+            "success": True,
+            "message": "MODIS L2 读取成功",
+            "data": {
+                "filename": file.filename,
+                "file_format": data.get("file_format"),
+                "shape": list(data.get("shape", [])),
+                "bands_found": data.get("bands_found", []),
+                "n_bands": data.get("n_bands_found", 0),
+                "band_stats": band_stats,
+                "warnings": data.get("warnings", []),
+                "lon_range": (
+                    [float(data["lon"].min()), float(data["lon"].max())]
+                    if data.get("lon") is not None else None
+                ),
+                "lat_range": (
+                    [float(data["lat"].min()), float(data["lat"].max())]
+                    if data.get("lat") is not None else None
+                ),
+                "qa_available": data.get("qa") is not None,
+            }
+        }
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"读取 MODIS L2 文件失败: {str(e)}")
+    finally:
+        file_path.unlink(missing_ok=True)
+
+
+@app.post("/api/modis/retrieve")
+async def api_chla_retrieve(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    satellite_type: str = Form("MODIS"),
+    model_type: str = Form("RF"),
+    qa_max: int = Form(1),
+    use_synthetic_model: bool = Form(True),
+    lon_min: Optional[float] = Form(None),
+    lon_max: Optional[float] = Form(None),
+    lat_min: Optional[float] = Form(None),
+    lat_max: Optional[float] = Form(None),
+):
+    """
+    端到端 Chl-a 反演：从 MODIS L2 文件直接反演叶绿素a分布图。
+
+    Parameters
+    ----------
+    file : UploadFile
+        MODIS L2 文件 (.nc/.hdf/.h5)
+    satellite_type : str
+        卫星类型（默认 MODIS）
+    model_type : str
+        模型类型：RF, ET, XGB, LGB, MLR, GP（默认 RF）
+    qa_max : int
+        最大 QA 值（默认1）
+    use_synthetic_model : bool
+        是否使用合成数据训练模型（默认True，演示用）
+        设置为 False 时需要先通过 /api/training 上传实测数据
+    lon_range/lat_range : float, optional
+        区域裁剪范围
+
+    Returns
+    -------
+    JSON
+        反演统计结果、下载链接
+    """
+    if retrieve_chla is None:
+        raise HTTPException(status_code=500, detail="反演模块不可用")
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ['.nc', '.hdf', '.h5', '.hdf4']:
+        raise HTTPException(status_code=400, detail="仅支持 .nc / .hdf / .h5 格式")
+
+    upload_dir = BASE_DIR / "data" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    modis_path = upload_dir / f"modis_input_{uuid.uuid4().hex[:8]}{suffix}"
+
+    try:
+        with open(modis_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # 读取 MODIS L2
+        lon_range = (lon_min, lon_max) if lon_min is not None and lon_max is not None else None
+        lat_range = (lat_min, lat_max) if lat_min is not None and lat_max is not None else None
+
+        with MODISL2Reader(modis_path) as reader:
+            modis_data = reader.read_all()
+
+        # 区域裁剪
+        if lon_range and lat_range:
+            from src.modis_l2_reader import clip_to_region
+            modis_data = clip_to_region(modis_data, lon_range, lat_range)
+
+        # 训练/获取模型
+        if use_synthetic_model:
+            model, feature_cols = auto_train_from_samples(model_name=model_type, n_samples=1000)
+        else:
+            # 用实测数据训练
+            samples_path = BASE_DIR / "data" / "samples" / "mock_rrs_chla_samples.csv"
+            sample_files = list((BASE_DIR / "data" / "samples").glob("samples_*.csv"))
+            if sample_files:
+                samples_path = sample_files[0]
+            if not samples_path.exists():
+                return {
+                    "success": False,
+                    "message": "请先上传实测样本数据",
+                    "data": None
+                }
+            df = pd.read_csv(samples_path)
+            if 'chl_a' not in df.columns:
+                return {
+                    "success": False,
+                    "message": "样本数据缺少 chl_a 列",
+                    "data": None
+                }
+            model, feature_cols = train_chla_model(df, model_name=model_type)
+
+        # 执行反演
+        import time
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_name = f"chla_{satellite_type.lower()}_{model_type}_{timestamp}"
+
+        result = retrieve_chla(
+            modis_data,
+            model,
+            feature_cols,
+            qa_max=qa_max,
+            output_name=output_name,
+            save_tiff=True,
+            save_preview=True,
+        )
+
+        # 提取输出路径
+        tiff_path = None
+        preview_path = None
+        if "tiff" in result.get("output_files", {}):
+            tiff_path = result["output_files"]["tiff"].get("path")
+        if "preview" in result.get("output_files", {}):
+            preview_path = result["output_files"]["preview"]
+
+        return {
+            "success": True,
+            "message": "Chl-a 反演完成",
+            "data": {
+                "output_name": output_name,
+                "satellite_type": satellite_type,
+                "model_type": model_type,
+                "chl_a_shape": result.get("chl_a_shape"),
+                "statistics": result.get("statistics"),
+                "tiff_path": Path(tiff_path).name if tiff_path else None,
+                "preview_path": Path(preview_path).name if preview_path else None,
+                "warnings": modis_data.get("warnings", []),
+            }
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Chl-a 反演失败: {str(e)}")
+    finally:
+        modis_path.unlink(missing_ok=True)
+
+
+@app.get("/api/modis/download/{filename}")
+async def download_modis_output(filename: str):
+    """下载反演结果文件（GeoTIFF 或 PNG）"""
+    maps_dir = BASE_DIR / "outputs" / "maps"
+    file_path = maps_dir / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    ext = file_path.suffix.lower()
+    media_type = {
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+        ".png": "image/png",
+    }.get(ext, "application/octet-stream")
+
+    return FileResponse(path=file_path, filename=filename, media_type=media_type)
+
+
+@app.get("/api/modis/regions")
+async def get_modis_regions():
+    """获取烟台近岸研究区域"""
+    return {
+        "success": True,
+        "data": {
+            "yantai": get_yantai_region(),
+            "presets": [
+                {"name": "芝罘湾", "lon_min": 121.30, "lon_max": 121.55, "lat_min": 37.50, "lat_max": 37.65},
+                {"name": "四十里湾", "lon_min": 121.55, "lon_max": 121.85, "lat_min": 37.45, "lat_max": 37.65},
+                {"name": "养马岛附近", "lon_min": 121.65, "lon_max": 122.05, "lat_min": 37.40, "lat_max": 37.65},
+            ]
+        }
     }
 
 

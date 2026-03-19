@@ -94,6 +94,12 @@ const features = [
     title: '结果展示',
     description: '查看分析结果和数据可视化',
     path: '/results'
+  },
+  {
+    icon: '🛰️',
+    title: '遥感反演',
+    description: '上传MODIS L2数据直接反演Chl-a分布图',
+    path: '/retrieval'
   }
 ]
 

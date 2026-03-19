@@ -11,3 +11,8 @@ openpyxl
 tifffile
 pytest
 rasterio
+python-multipart
+fastapi
+uvicorn[standard]
+netCDF4
+h5py

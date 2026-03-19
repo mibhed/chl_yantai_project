@@ -407,7 +407,7 @@
         const years = Array.from({length: 8}, (_, i) => 2018 + i);
 
         const api = axios.create({
-          baseURL: 'http://' + window.location.hostname + ':8501/api',
+          baseURL: '/api',
           timeout: 120000
         });
 
@@ -517,18 +517,30 @@
         };
 
         const uploadTiff = async () => {
-          if (!tiffFile.value) return;
+          if (!tiffFile.value) {
+            alert('请先选择文件');
+            return;
+          }
           uploadingTiff.value = true;
           tiffResult.value = null;
           const formData = new FormData();
           formData.append('file', tiffFile.value);
+          console.log('开始上传文件:', tiffFile.value.name);
           try {
             const res = await api.post('/upload/tiff', formData, {
               headers: { 'Content-Type': 'multipart/form-data' }
             });
+            console.log('上传响应:', res);
             tiffResult.value = res.data;
+            if (res.data.success) {
+              alert('上传成功: ' + res.data.message);
+            } else {
+              alert('上传失败: ' + res.data.message);
+            }
           } catch (e) {
+            console.error('上传错误:', e);
             tiffResult.value = { success: false, message: '上传失败: ' + e.message };
+            alert('上传失败: ' + e.message);
           } finally {
             uploadingTiff.value = false;
           }

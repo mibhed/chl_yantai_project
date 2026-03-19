@@ -156,7 +156,7 @@ def extract_rrs_bands(img: np.ndarray, band_mapping: Optional[Dict[str, int]] = 
 
 def calculate_derived_features(rrs_bands: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     """
-    根据Rrs波段计算派生特征
+    根据Rrs波段计算派生特征（含水色指数）
 
     Parameters
     ----------
@@ -171,13 +171,20 @@ def calculate_derived_features(rrs_bands: Dict[str, np.ndarray]) -> Dict[str, np
         - 波段差值: diff_488_555, diff_555_645
         - 波段求和: sum_443_488, sum_555_645
         - 三波段组合: tri_443_488_555, tri_488_555_645
+        - 水色指数:
+          - ndci: NDCI = (Rrs_645 - Rrs_555) / (Rrs_645 + Rrs_555)
+          - ndci_678: NDCI红边版 = (Rrs_678 - Rrs_555) / (Rrs_678 + Rrs_555)
+          - ci_green: CIgreen = Rrs_555 - Rrs_443
+          - ci_rededge: CIred-edge = Rrs_678 - Rrs_645
+          - brr_green_blue: 绿蓝比值 = Rrs_555 / (Rrs_443 + Rrs_488)
+          - brr_red_green: 红绿比值 = Rrs_645 / (Rrs_555 + eps)
 
     Examples
     --------
-    >>> bands = {"Rrs_443": arr, "Rrs_488": arr, "Rrs_555": arr}
+    >>> bands = {"Rrs_443": arr, "Rrs_488": arr, "Rrs_555": arr, "Rrs_645": arr, "Rrs_678": arr}
     >>> features = calculate_derived_features(bands)
     >>> print(features.keys())
-    dict_keys(['ratio_443_555', 'ratio_488_555', ...])
+    dict_keys(['ratio_443_555', 'ratio_488_555', ..., 'ndci', 'ndci_678', 'ci_green', ...])
     """
     features = {}
     eps = 1e-6
@@ -219,6 +226,35 @@ def calculate_derived_features(rrs_bands: Dict[str, np.ndarray]) -> Dict[str, np
         features["tri_488_555_645"] = (
             rrs_bands["Rrs_488"] - rrs_bands["Rrs_555"] + rrs_bands["Rrs_645"]
         )
+
+    # ===== 水色指数（Chl-a 反演专用）=====
+
+    # NDCI: Normalized Difference Chlorophyll Index (蓝绿版, 665nm 红光)
+    if "Rrs_555" in rrs_bands and "Rrs_645" in rrs_bands:
+        denom = rrs_bands["Rrs_555"] + rrs_bands["Rrs_645"]
+        features["ndci"] = (rrs_bands["Rrs_645"] - rrs_bands["Rrs_555"]) / (denom + eps)
+
+    # NDCI red-edge: 用 678nm 红边波段替代 645nm
+    if "Rrs_555" in rrs_bands and "Rrs_678" in rrs_bands:
+        denom = rrs_bands["Rrs_555"] + rrs_bands["Rrs_678"]
+        features["ndci_678"] = (rrs_bands["Rrs_678"] - rrs_bands["Rrs_555"]) / (denom + eps)
+
+    # CIgreen: Chlorophyll Index green
+    if "Rrs_443" in rrs_bands and "Rrs_555" in rrs_bands:
+        features["ci_green"] = rrs_bands["Rrs_555"] - rrs_bands["Rrs_443"]
+
+    # CIred-edge: Chlorophyll Index red-edge
+    if "Rrs_645" in rrs_bands and "Rrs_678" in rrs_bands:
+        features["ci_rededge"] = rrs_bands["Rrs_678"] - rrs_bands["Rrs_645"]
+
+    # BRR: Band Ratio Index (蓝绿、红绿)
+    if all(k in rrs_bands for k in ["Rrs_443", "Rrs_488", "Rrs_555"]):
+        denom = rrs_bands["Rrs_443"] + rrs_bands["Rrs_488"] + eps
+        features["brr_green_blue"] = rrs_bands["Rrs_555"] / denom
+
+    if "Rrs_555" in rrs_bands and "Rrs_645" in rrs_bands:
+        denom = rrs_bands["Rrs_555"] + rrs_bands["Rrs_645"] + eps
+        features["brr_red_green"] = rrs_bands["Rrs_645"] / denom
 
     return features
 
@@ -270,7 +306,7 @@ def extract_pixels_as_dataframe(
 
     data = {"row": rows, "col": cols}
 
-    for band_name, band_data in rrs_bands.flatten():
+    for band_name, band_data in rrs_bands.items():
         data[band_name] = band_data.flatten()
 
     features = calculate_derived_features(rrs_bands)

@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { useAppStore } from '@/stores/app'
@@ -76,23 +76,31 @@ const form = ref({
 const training = ref(false)
 const trainingResult = ref(null)
 const results = ref([])
-const models = ref([])
+const models = computed(() => store.models)
 
 const trainModel = async () => {
   training.value = true
   trainingResult.value = null
-  
+
   try {
+    console.log('[Model] Starting training:', form.value.modelType, 'cvFolds:', form.value.cvFolds)
     const res = await api.trainModel(form.value.modelType, form.value.cvFolds)
+    console.log('[Model] Training response:', res)
     trainingResult.value = res
+
     if (res.success) {
-      ElMessage.success('模型训练完成')
+      ElMessage.success('模型训练完成: ' + (res.data?.best_model || ''))
       await loadResults()
     } else {
       ElMessage.error(res.message || '训练失败')
     }
   } catch (e) {
-    ElMessage.error('训练失败: ' + e.message)
+    console.error('[Model] Training error:', e)
+    ElMessage.error('训练失败: ' + (e.response?.data?.detail || e.message || '未知错误'))
+    trainingResult.value = {
+      success: false,
+      message: e.response?.data?.detail || e.message || '训练失败'
+    }
   } finally {
     training.value = false
   }
@@ -111,7 +119,6 @@ const loadResults = async () => {
 
 onMounted(async () => {
   await store.fetchModels()
-  models.value = store.models
   await loadResults()
 })
 </script>

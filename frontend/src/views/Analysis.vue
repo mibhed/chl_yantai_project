@@ -79,13 +79,13 @@
         <el-col :span="12">
           <div class="stat-item">
             <div class="stat-label">平均叶绿素浓度</div>
-            <div class="stat-value">{{ analysisResult.data?.summary?.mean?.toFixed(3) }} mg/m³</div>
+            <div class="stat-value">{{ analysisResult.data?.summary?.mean_chl_a?.toFixed(3) || 'N/A' }} mg/m³</div>
           </div>
         </el-col>
         <el-col :span="12">
           <div class="stat-item">
             <div class="stat-label">最大叶绿素浓度</div>
-            <div class="stat-value">{{ analysisResult.data?.summary?.max?.toFixed(3) }} mg/m³</div>
+            <div class="stat-value">{{ analysisResult.data?.summary?.max_chl_a?.toFixed(3) || 'N/A' }} mg/m³</div>
           </div>
         </el-col>
       </el-row>
@@ -93,16 +93,37 @@
         <el-col :span="12">
           <div class="stat-item">
             <div class="stat-label">最小叶绿素浓度</div>
-            <div class="stat-value">{{ analysisResult.data?.summary?.min?.toFixed(3) }} mg/m³</div>
+            <div class="stat-value">{{ analysisResult.data?.summary?.min_chl_a?.toFixed(3) || 'N/A' }} mg/m³</div>
           </div>
         </el-col>
         <el-col :span="12">
           <div class="stat-item">
             <div class="stat-label">标准差</div>
-            <div class="stat-value">{{ analysisResult.data?.summary?.std?.toFixed(3) }} mg/m³</div>
+            <div class="stat-value">{{ analysisResult.data?.summary?.std_chl_a?.toFixed(3) || 'N/A' }} mg/m³</div>
           </div>
         </el-col>
       </el-row>
+    </el-card>
+
+    <el-card v-if="monthlyResult" class="result-card">
+      <template #header>
+        <span>月度分析结果 - {{ monthlyResult.data?.region }} {{ monthlyResult.data?.year }}年</span>
+      </template>
+      <div ref="monthlyChartRef" class="chart-container"></div>
+    </el-card>
+
+    <el-card v-if="multiRegionResult" class="result-card">
+      <template #header>
+        <span>多区域对比结果 - {{ multiRegionResult.data?.year }}年</span>
+      </template>
+      <div ref="multiRegionChartRef" class="chart-container"></div>
+    </el-card>
+
+    <el-card v-if="multiYearResult" class="result-card">
+      <template #header>
+        <span>多年趋势分析结果 - {{ multiYearResult.data?.region }}</span>
+      </template>
+      <div ref="multiYearChartRef" class="chart-container"></div>
     </el-card>
 
     <el-card class="chart-card">
@@ -196,8 +217,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
+import * as echarts from 'echarts'
 import api from '@/api'
 import { useAppStore } from '@/stores/app'
 
@@ -210,8 +232,8 @@ const form = ref({
 })
 const analyzing = ref(false)
 const analysisResult = ref(null)
-const regions = ref([])
-const models = ref([])
+const regions = computed(() => store.regions)
+const models = computed(() => store.models)
 const years = Array.from({ length: 8 }, (_, i) => 2018 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
@@ -223,12 +245,20 @@ const monthlyForm = ref({ region: '', year: new Date().getFullYear() })
 const multiRegionForm = ref({ year: new Date().getFullYear() })
 const multiYearForm = ref({ region: '', startYear: 2020, endYear: 2025 })
 
+const monthlyResult = ref(null)
+const multiRegionResult = ref(null)
+const multiYearResult = ref(null)
+
+const monthlyChartRef = ref(null)
+const multiRegionChartRef = ref(null)
+const multiYearChartRef = ref(null)
+
 const runAnalysis = async () => {
   if (!form.value.region) {
     ElMessage.warning('请选择区域')
     return
   }
-  
+
   analyzing.value = true
   try {
     const res = await api.spatialAnalysis(
@@ -244,33 +274,179 @@ const runAnalysis = async () => {
       ElMessage.error(res.message || '分析失败')
     }
   } catch (e) {
-    ElMessage.error('分析失败: ' + e.message)
+    ElMessage.error('分析失败: ' + (e.message || '未知错误'))
   } finally {
     analyzing.value = false
   }
 }
 
 const runMonthlyAnalysis = async () => {
-  showMonthlyDialog.value = false
-  ElMessage.info('月度分析功能开发中')
+  if (!monthlyForm.value.region) {
+    ElMessage.warning('请选择区域')
+    return
+  }
+
+  analyzing.value = true
+  try {
+    const res = await api.monthlyAnalysis(
+      monthlyForm.value.region,
+      monthlyForm.value.year,
+      form.value.model
+    )
+    monthlyResult.value = res
+    showMonthlyDialog.value = false
+    if (res.success) {
+      ElMessage.success('月度分析完成')
+      await nextTick()
+      renderMonthlyChart(res.data)
+    } else {
+      ElMessage.error(res.message || '月度分析失败')
+    }
+  } catch (e) {
+    ElMessage.error('月度分析失败: ' + (e.message || '未知错误'))
+  } finally {
+    analyzing.value = false
+  }
 }
 
 const runMultiRegionAnalysis = async () => {
-  showMultiRegionDialog.value = false
-  ElMessage.info('多区域对比功能开发中')
+  analyzing.value = true
+  try {
+    const res = await api.multiRegionAnalysis(
+      multiRegionForm.value.year,
+      form.value.model
+    )
+    multiRegionResult.value = res
+    showMultiRegionDialog.value = false
+    if (res.success) {
+      ElMessage.success('多区域对比完成')
+      await nextTick()
+      renderMultiRegionChart(res.data)
+    } else {
+      ElMessage.error(res.message || '多区域对比失败')
+    }
+  } catch (e) {
+    ElMessage.error('多区域对比失败: ' + (e.message || '未知错误'))
+  } finally {
+    analyzing.value = false
+  }
 }
 
 const runMultiYearAnalysis = async () => {
-  showMultiYearDialog.value = false
-  ElMessage.info('多年趋势分析功能开发中')
+  if (!multiYearForm.value.region) {
+    ElMessage.warning('请选择区域')
+    return
+  }
+
+  analyzing.value = true
+  try {
+    const res = await api.multiYearAnalysis(
+      multiYearForm.value.region,
+      multiYearForm.value.startYear,
+      multiYearForm.value.endYear,
+      form.value.model
+    )
+    multiYearResult.value = res
+    showMultiYearDialog.value = false
+    if (res.success) {
+      ElMessage.success('多年趋势分析完成')
+      await nextTick()
+      renderMultiYearChart(res.data)
+    } else {
+      ElMessage.error(res.message || '多年趋势分析失败')
+    }
+  } catch (e) {
+    ElMessage.error('多年趋势分析失败: ' + (e.message || '未知错误'))
+  } finally {
+    analyzing.value = false
+  }
+}
+
+const renderMonthlyChart = (data) => {
+  if (!monthlyChartRef.value || !data.monthly_data) return
+
+  const chart = echarts.init(monthlyChartRef.value)
+  const option = {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['平均叶绿素浓度'] },
+    xAxis: {
+      type: 'category',
+      data: data.monthly_data.map(d => `${d.month}月`)
+    },
+    yAxis: {
+      type: 'value',
+      name: 'mg/m³',
+      axisLabel: { formatter: '{value}' }
+    },
+    series: [{
+      name: '平均叶绿素浓度',
+      type: 'line',
+      data: data.monthly_data.map(d => d.mean_chl_a),
+      smooth: true,
+      areaStyle: { opacity: 0.3 },
+      itemStyle: { color: '#667eea' }
+    }]
+  }
+  chart.setOption(option)
+}
+
+const renderMultiRegionChart = (data) => {
+  if (!multiRegionChartRef.value || !data.multi_region_data) return
+
+  const chart = echarts.init(multiRegionChartRef.value)
+  const option = {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['平均叶绿素浓度'] },
+    xAxis: {
+      type: 'category',
+      data: data.multi_region_data.map(d => d.region),
+      axisLabel: { rotate: 30 }
+    },
+    yAxis: {
+      type: 'value',
+      name: 'mg/m³'
+    },
+    series: [{
+      name: '平均叶绿素浓度',
+      type: 'bar',
+      data: data.multi_region_data.map(d => d.mean_chl_a),
+      itemStyle: { color: '#667eea' }
+    }]
+  }
+  chart.setOption(option)
+}
+
+const renderMultiYearChart = (data) => {
+  if (!multiYearChartRef.value || !data.multi_year_data) return
+
+  const chart = echarts.init(multiYearChartRef.value)
+  const option = {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['平均叶绿素浓度'] },
+    xAxis: {
+      type: 'category',
+      data: data.multi_year_data.map(d => `${d.year}年`)
+    },
+    yAxis: {
+      type: 'value',
+      name: 'mg/m³'
+    },
+    series: [{
+      name: '平均叶绿素浓度',
+      type: 'line',
+      data: data.multi_year_data.map(d => d.mean_chl_a),
+      smooth: true,
+      areaStyle: { opacity: 0.3 },
+      itemStyle: { color: '#764ba2' }
+    }]
+  }
+  chart.setOption(option)
 }
 
 onMounted(async () => {
   await store.fetchRegions()
   await store.fetchModels()
-  regions.value = store.regions
-  models.value = store.models
-  
+
   if (regions.value.length > 0) {
     form.value.region = regions.value[0].name
     monthlyForm.value.region = regions.value[0].name

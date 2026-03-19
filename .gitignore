@@ -1,4 +1,6 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,22 +9,70 @@ __pycache__/
 venv/
 .venv/
 env/
+ENV/
 *.egg-info/
 .eggs/
+build/
+dist/
+*.whl
 
-# IDE
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================================
+# Node.js
+# ============================================================
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
+
+# ============================================================
+# IDE & OS
+# ============================================================
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# 日志与临时文件
-*.log
-streamlit.log
-
-# 系统文件
+*.swn
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# 输出文件（避免产生大量变更）
-outputs/
+# ============================================================
+# Logs & caches
+# ============================================================
+logs/
+*.log
+streamlit.log
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+
+# ============================================================
+# Data & outputs (user-specific / generated)
+# ============================================================
+data/raw/
+data/uploads/
+data/processed/
+data/samples/samples_*.xlsx
+data/samples/test_*.tif
+
+# Sample files (synthetic / not real measurement data)
+data/samples/samples_*.xlsx
+data/samples/test_*.tif
+
+# Backups
+*.backup
+*.bak
+*.tmp
+
+# ============================================================
+# Environment files
+# ============================================================
+.env
+.env.*
+*.env
+secrets.json
+credentials.json

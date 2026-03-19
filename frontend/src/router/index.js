@@ -30,6 +30,12 @@ const routes = [
     name: 'Results',
     component: () => import('@/views/Results.vue'),
     meta: { title: '结果展示' }
+  },
+  {
+    path: '/retrieval',
+    name: 'Retrieval',
+    component: () => import('@/views/Retrieval.vue'),
+    meta: { title: '遥感反演' }
   }
 ]
 

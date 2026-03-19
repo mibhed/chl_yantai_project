@@ -16,6 +16,7 @@
           <el-menu-item index="/model">模型训练</el-menu-item>
           <el-menu-item index="/analysis">空间分析</el-menu-item>
           <el-menu-item index="/results">结果展示</el-menu-item>
+          <el-menu-item index="/retrieval">遥感反演</el-menu-item>
         </el-menu>
       </div>
     </el-header>
@@ -27,13 +28,14 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
+const router = useRouter()
 const activeMenu = computed(() => route.path)
 
 const handleMenuSelect = (index) => {
-  window.location.href = index
+  router.push(index)
 }
 </script>
 
