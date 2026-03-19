@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from enum import Enum
+import asyncio
+import queue
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -86,6 +88,98 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---- SSE Progress Stream ----
+@app.get("/api/training/stream")
+async def training_stream(stream_id: str):
+    """
+    SSE 流端点，前端 EventSource 监听此路径获取实时训练进度。
+    前端发起请求时需带上 ?stream_id=xxx，xxx 由 POST /api/training/start 返回。
+    """
+    from app.api.progress import get_queue, close_stream
+    q = get_queue(stream_id)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.to_thread(q.get, timeout=60)
+                except queue.Empty:
+                    yield "event: ping\ndata: \n\n"
+                    continue
+
+                import json
+                yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                if event.get("stage") in ("done", "error"):
+                    break
+        finally:
+            close_stream(stream_id)
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.post("/api/training/start")
+async def start_training(request: TrainingRequest):
+    """
+    启动训练并返回 stream_id，前端用此 ID 打开 SSE 监听。
+    """
+    from app.api.progress import create_stream_id, put_progress, get_queue
+
+    stream_id = create_stream_id()
+
+    async def run_in_background():
+        from src.train import run_training
+        try:
+            put_progress(stream_id, "loading", 5, "加载样本数据...")
+
+            samples_path = BASE_DIR / "data" / "samples" / "mock_rrs_chla_samples.csv"
+            sample_files = list((BASE_DIR / "data" / "samples").glob("samples_*.csv"))
+            real_files = [f for f in sample_files if "mock" not in f.name]
+            if real_files:
+                samples_path = real_files[0]
+            elif sample_files:
+                samples_path = sample_files[0]
+
+            use_synthetic = request.use_synthetic
+            if not samples_path.exists() or use_synthetic:
+                from src.preprocess import generate_mock_samples
+                df = generate_mock_samples(n_samples=1000, seed=42)
+                samples_path = BASE_DIR / "data" / "samples" / "mock_rrs_chla_samples.csv"
+                df.to_csv(samples_path, index=False)
+            else:
+                df = pd.read_csv(samples_path)
+
+            put_progress(stream_id, "training", 25, f"数据加载完成 ({len(df)} 样本)")
+
+            report_dir = BASE_DIR / "outputs" / "reports"
+            figure_dir = BASE_DIR / "outputs" / "figures"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            figure_dir.mkdir(parents=True, exist_ok=True)
+
+            put_progress(stream_id, "training", 35, "开始训练多个模型 (见控制台/终端 tqdm 进度条)...")
+            results_df, pred_df, best_model = run_training(
+                df, report_dir=report_dir, figure_dir=figure_dir
+            )
+            put_progress(stream_id, "done", 100, f"训练完成，最佳模型: {best_model}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            put_progress(stream_id, "error", 0, f"错误: {e}")
+
+    asyncio.create_task(run_in_background())
+    return {"stream_id": stream_id}
+
 
 class ModelType(str, Enum):
     RF = "RF"

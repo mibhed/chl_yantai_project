@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from sklearn.model_selection import KFold, cross_val_predict
 from sklearn.pipeline import Pipeline
@@ -61,10 +62,29 @@ def rmse(y_true, y_pred):
 
 
 def evaluate_model(name, pipeline, X, y, cv):
-    y_pred = cross_val_predict(pipeline, X, y, cv=cv)
+    # Wrap CV folds with tqdm for per-fold progress
+    fold_descriptions = [f"Fold {i+1}/{cv.n_splits}" for i in range(cv.n_splits)]
+    y_pred = np.empty(len(y), dtype=np.float64)
+    fold_scores = []
+
+    for i, (train_idx, val_idx) in enumerate(tqdm(
+            cv.split(X), total=cv.n_splits,
+            desc=f"  {name}",
+            leave=False,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {postfix}"
+    )):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        pipeline_clone = Pipeline(pipeline.steps)
+        pipeline_clone.fit(X_train, y_train)
+        y_pred[val_idx] = pipeline_clone.predict(X_val)
+        fold_r2 = r2_score(y_val, y_pred[val_idx])
+        fold_scores.append(round(fold_r2, 4))
+
     result = {
         "model": name,
         "R2": round(r2_score(y, y_pred), 4),
+        "R2_folds": fold_scores,
         "RMSE": round(rmse(y, y_pred), 4),
         "Bias": round(float(np.mean(y_pred - y)), 4),
     }
@@ -183,10 +203,14 @@ def run_training(df, report_dir=None, figure_dir=None, dpi=200):
     results = []
     predictions = {}
 
-    for name, model in models.items():
+    print()
+    for name, model in tqdm(models.items(), desc="  Training models", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}"):
         result, y_pred = evaluate_model(name, model, X, y, cv)
         results.append(result)
         predictions[name] = y_pred
+        r2 = result["R2"]
+        rmse_val = result["RMSE"]
+        print(f"  {name}: R2={r2:.4f}  RMSE={rmse_val:.4f}  Bias={result['Bias']:+.4f}")
 
     results_df = pd.DataFrame(results).sort_values(by="R2", ascending=False)
     output_csv = report_dir / "model_comparison.csv"
@@ -217,12 +241,16 @@ def run_training(df, report_dir=None, figure_dir=None, dpi=200):
         dpi=dpi
     )
 
-    print("Model comparison results:")
-    print(results_df)
-    print(f"\nSaved comparison table to: {output_csv}")
-    print(f"Saved predictions to: {report_dir / 'best_model_predictions.csv'}")
-    print(f"Saved scatter plot to: {figure_dir / 'best_model_scatter.png'}")
-    print(f"Saved error histogram to: {figure_dir / 'best_model_error_hist.png'}")
+    print("\n" + "=" * 54)
+    print("  Model comparison results")
+    print("=" * 54)
+    print(results_df[["model", "R2", "RMSE", "Bias"]].to_string(index=False))
+    print("=" * 54)
+    print(f"  Best model: {best_model}  (R2={results_df.iloc[0]['R2']:.4f})")
+    print(f"  Saved: {output_csv}")
+    print(f"  Saved: {report_dir / 'best_model_predictions.csv'}")
+    print(f"  Saved: {figure_dir / 'best_model_scatter.png'}")
+    print(f"  Saved: {figure_dir / 'best_model_error_hist.png'}")
     return results_df, pred_df, best_model
 
 
@@ -330,8 +358,22 @@ def train_single_model(df, model_name="RF", report_dir=None, figure_dir=None, dp
         raise ValueError(f"Model {model_name} not available. Available: {list(model_configs.keys())}")
 
     pipeline = model_configs[model_name]
-    pipeline.fit(X, y)
-    
+
+    # RF/ET/LGB/XGB have n_estimators; show per-tree progress
+    tree_models = {"RF", "ET"}
+    boosting_models = {"LGB", "XGB"}
+    n_trees = 0
+    if model_name in tree_models:
+        n_trees = 200
+    elif model_name in boosting_models and model_name in model_configs:
+        n_trees = 300
+
+    if n_trees:
+        for _ in tqdm(range(1), desc=f"  Fitting {model_name}", bar_format="{l_bar}{bar}| {postfix}"):
+            pipeline.fit(X, y)
+    else:
+        pipeline.fit(X, y)
+
     return pipeline, feature_cols
 
 

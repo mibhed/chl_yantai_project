@@ -1,5 +1,19 @@
 <template>
   <div class="model-view">
+    <!-- 实时进度条 -->
+    <el-card v-if="training" class="progress-card">
+      <template #header>
+        <span>训练进度</span>
+      </template>
+      <el-progress
+        :percentage="progressPct"
+        :status="progressPct >= 100 ? 'success' : undefined"
+        :stroke-width="20"
+      />
+      <p class="progress-stage">{{ progressStage }}</p>
+      <p class="progress-msg">{{ progressMsg }}</p>
+    </el-card>
+
     <el-card>
       <template #header>
         <div class="card-header">
@@ -78,17 +92,51 @@ const trainingResult = ref(null)
 const results = ref([])
 const models = computed(() => store.models)
 
+const progressPct = ref(0)
+const progressStage = ref('')
+const progressMsg = ref('')
+let eventSource = null
+
 const trainModel = async () => {
   training.value = true
   trainingResult.value = null
+  progressPct.value = 0
+  progressStage.value = '准备启动...'
+  progressMsg.value = ''
 
   try {
+    // 1. 启动后端训练，获取 stream_id
+    const startRes = await api.startTraining(form.value.modelType, form.value.cvFolds)
+    const { stream_id } = startRes
+
+    // 2. 用 stream_id 打开 SSE 监听实时进度
+    eventSource = new EventSource(`/api/training/stream?stream_id=${stream_id}`)
+
+    eventSource.addEventListener('progress', (e) => {
+      try {
+        const d = JSON.parse(e.data)
+        progressPct.value = d.pct
+        progressStage.value = stageLabel(d.stage)
+        progressMsg.value = d.msg || ''
+      } catch {}
+    })
+
+    eventSource.addEventListener('ping', () => {})
+
+    eventSource.onerror = () => {
+      // 连接断开时不中断，等待 fetch 完成
+    }
+
+    // 3. 等待后端训练真正完成（fetch 原本的训练接口）
     console.log('[Model] Starting training:', form.value.modelType, 'cvFolds:', form.value.cvFolds)
     const res = await api.trainModel(form.value.modelType, form.value.cvFolds)
     console.log('[Model] Training response:', res)
     trainingResult.value = res
 
     if (res.success) {
+      progressPct.value = 100
+      progressStage.value = '完成'
+      progressMsg.value = '模型训练完成'
       ElMessage.success('模型训练完成: ' + (res.data?.best_model || ''))
       await loadResults()
     } else {
@@ -103,7 +151,22 @@ const trainModel = async () => {
     }
   } finally {
     training.value = false
+    progressPct.value = 0
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
   }
+}
+
+const stageLabel = (stage) => {
+  const map = {
+    loading: '加载数据',
+    training: '训练中',
+    done: '完成',
+    error: '错误',
+  }
+  return map[stage] || stage || ''
 }
 
 const loadResults = async () => {

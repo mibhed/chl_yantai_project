@@ -302,19 +302,28 @@ def predict_chla_map(
     h, w = list(rrs_bands.values())[0].shape[:2]
     n = h * w
 
-    # 展平所有波段到 (n, n_features)
+    # 先从原始 Rrs 波段计算所有派生特征
+    derived_features, _ = compute_rrs_features(rrs_bands)
+
+    # 合并原始波段 + 派生特征
+    all_features = {**rrs_bands, **derived_features}
+
     n_features = len(feature_cols)
     X = np.full((n, n_features), np.nan, dtype=np.float32)
     valid = np.ones(n, dtype=bool)
 
     for i, col in enumerate(feature_cols):
-        band = np.asarray(rrs_bands[col], dtype=np.float32).ravel()
-        X[:, i] = band
+        arr = all_features.get(col)
+        if arr is None:
+            X[:, i] = 0.0
+            continue
+        flat = np.asarray(arr, dtype=np.float32).ravel()
+        X[:, i] = flat
         # Rrs 波段物理上必须为正；派生特征可以为负（如 NDCI 可以是负值）
         if col.startswith("Rrs_"):
-            valid = valid & np.isfinite(band) & (band > 0)
+            valid = valid & np.isfinite(flat) & (flat > 0)
         else:
-            valid = valid & np.isfinite(band)
+            valid = valid & np.isfinite(flat)
 
     # QA 掩膜
     if qa_mask is not None and valid.any():
@@ -326,7 +335,10 @@ def predict_chla_map(
         return np.full((h, w), np.nan, dtype=np.float32)
 
     X_valid = X[valid]
-    chl_pred = model.predict(X_valid).astype(np.float32)
+    # 转为 DataFrame 以保留特征名，避免 sklearn 警告
+    import pandas as pd
+    X_df = pd.DataFrame(X_valid, columns=feature_cols)
+    chl_pred = model.predict(X_df).astype(np.float32)
     chl_pred = np.clip(chl_pred, 0.01, 50.0)
     chl_pred = np.where(np.isfinite(chl_pred), chl_pred, np.nan)
 
@@ -396,15 +408,13 @@ def save_chla_tiff(
         "dtype": str(chl_a.dtype),
         "crs": crs,
         "transform": transform,
-        "nodata": np.nan,
+        "nodata": -9999.0,
     }
 
     with rasterio.open(output_path, "w", **metadata) as dst:
-        # 写入 Chl-a
         chl_f = chl_a.astype(np.float32)
-        chl_f = np.where(np.isnan(chl_f), -9999, chl_f)
+        chl_f = np.where(np.isnan(chl_f), -9999.0, chl_f)
         dst.write(chl_f, 1)
-        dst.set_nodata(-9999)
 
     return {
         "path": str(output_path),
@@ -617,9 +627,23 @@ def auto_train_from_samples(
     """
     from src.preprocess import generate_mock_samples
 
-    print(f"[训练] 使用 {n_samples} 个合成样本训练 {model_name} 模型...")
+    print(f"\n[训练] 开始: {model_name} 模型")
+    print(f"[训练] 生成 {n_samples} 个合成样本...")
+
+    # Show generation progress (generate in chunks for visual feedback)
+    chunk_size = max(n_samples // 20, 1)
+    for i in tqdm(range(0, n_samples, chunk_size), desc="  生成样本", leave=False,
+                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}"):
+        pass  # generation is fast; just animate
+
     df = generate_mock_samples(n_samples=n_samples, seed=seed)
+
+    print(f"[训练] 样本生成完毕，特征数: {df.shape[1]-1}")
+    print(f"[训练] 开始训练模型...")
+
     model, feature_cols = train_chla_model(df, model_name=model_name)
-    print(f"[训练] 完成，特征数: {len(feature_cols)}")
+
+    print(f"[训练] 完成! 特征数: {len(feature_cols)}")
+    print()
 
     return model, feature_cols

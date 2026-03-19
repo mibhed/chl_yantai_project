@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from sklearn.model_selection import KFold, cross_val_score, cross_val_predict
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
@@ -242,11 +243,12 @@ def cross_validate_model(
         metrics = ["r2", "neg_mean_squared_error", "neg_mean_absolute_error"]
     
     kfold = KFold(n_splits=cv, shuffle=True, random_state=42)
-    
+
     results = {}
-    for metric in metrics:
+    for metric in tqdm(metrics, desc="  Metrics", leave=False,
+                       bar_format="{l_bar}{bar}| {postfix}"):
         scores = cross_val_score(pipeline, X, y, cv=kfold, scoring=metric)
-        
+
         if metric == "r2":
             results["R2_mean"] = scores.mean()
             results["R2_std"] = scores.std()
@@ -256,13 +258,16 @@ def cross_validate_model(
         elif metric == "neg_mean_absolute_error":
             results["MAE_mean"] = (-scores).mean()
             results["MAE_std"] = (-scores).std()
-    
+
+    print(f"    R2={results.get('R2_mean',0):.4f}±{results.get('R2_std',0):.4f}  "
+          f"RMSE={results.get('RMSE_mean',0):.4f}±{results.get('RMSE_std',0):.4f}")
+
     y_pred = cross_val_predict(pipeline, X, y, cv=kfold)
     results["R2"] = r2_score(y, y_pred)
     results["RMSE"] = np.sqrt(mean_squared_error(y, y_pred))
     results["MAE"] = mean_absolute_error(y, y_pred)
     results["Bias"] = np.mean(y_pred - y)
-    
+
     return results
 
 
@@ -290,8 +295,9 @@ def compare_models(
         模型比较结果
     """
     results = []
-    
-    for name, pipeline in pipelines.items():
+
+    for name, pipeline in tqdm(pipelines.items(), desc="  Comparing models", leave=False,
+                               bar_format="{l_bar}{bar}| {postfix}"):
         try:
             cv_results = cross_validate_model(pipeline, X, y, cv=cv)
             results.append({

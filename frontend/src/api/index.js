@@ -59,7 +59,11 @@ export default {
   trainModel(modelType, cvFolds = 5) {
     return api.post('/training', { model_type: modelType, cv_folds: cvFolds })
   },
-  
+
+  startTraining(modelType, cvFolds = 5) {
+    return api.post('/training/start', { model_type: modelType, cv_folds: cvFolds })
+  },
+
   getTrainingResults() {
     return api.get('/training/results')
   },
