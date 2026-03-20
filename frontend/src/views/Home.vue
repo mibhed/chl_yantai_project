@@ -10,11 +10,54 @@
     </el-row>
 
     <el-row :gutter="20" class="feature-cards">
-      <el-col :span="6" v-for="feature in features" :key="feature.title">
+      <el-col :span="8" v-for="feature in features.slice(0, 3)" :key="feature.title">
         <el-card class="feature-card" @click="goTo(feature.path)">
           <div class="feature-icon">{{ feature.icon }}</div>
           <h3>{{ feature.title }}</h3>
           <p>{{ feature.description }}</p>
+        </el-card>
+      </el-col>
+    </el-row>
+    <el-row :gutter="20" class="feature-cards">
+      <el-col :span="12" v-for="feature in features.slice(3)" :key="feature.title">
+        <el-card class="feature-card" @click="goTo(feature.path)">
+          <div class="feature-icon">{{ feature.icon }}</div>
+          <h3>{{ feature.title }}</h3>
+          <p>{{ feature.description }}</p>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 快速操作区域 -->
+    <el-row :gutter="20" class="quick-actions">
+      <el-col :span="24">
+        <el-card class="quick-actions-card">
+          <template #header>
+            <div class="card-header">
+              <span>⚡ 快速操作</span>
+            </div>
+          </template>
+          <div class="quick-buttons">
+            <el-button
+              type="primary"
+              size="large"
+              icon="🤖"
+              @click="goTo('/model')"
+              class="quick-action-btn"
+            >
+              开始模型训练
+            </el-button>
+            <el-button
+              type="success"
+              size="large"
+              icon="🛰️"
+              @click="goTo('/retrieval')"
+              class="quick-action-btn"
+            >
+              开始遥感反演
+            </el-button>
+          </div>
+          <p class="quick-hint">点击上方按钮快速进入模型训练或遥感反演功能</p>
         </el-card>
       </el-col>
     </el-row>
@@ -187,5 +230,44 @@ onMounted(async () => {
 .stat-label {
   margin-top: 10px;
   color: #666;
+}
+
+.quick-actions {
+  margin: 30px 0;
+}
+
+.quick-actions-card {
+  background: linear-gradient(135deg, #f0f9eb 0%, #e8f5e9 100%);
+  border: 2px solid #67c23a;
+}
+
+.quick-buttons {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+
+.quick-action-btn {
+  min-width: 200px;
+  height: 60px;
+  font-size: 18px;
+  font-weight: bold;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.3s;
+}
+
+.quick-action-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+
+.quick-hint {
+  text-align: center;
+  color: #67c23a;
+  font-size: 14px;
+  margin-top: 10px;
 }
 </style>
