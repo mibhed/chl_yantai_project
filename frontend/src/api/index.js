@@ -107,6 +107,21 @@ export default {
     })
   },
 
+  // 使用示例数据执行演示反演
+  demoChlaRetrieve(modelType = 'RF', qaMax = 1) {
+    return api.post(`/modis/retrieve/demo?model_type=${modelType}&qa_max=${qaMax}`, null, {
+      timeout: 300000
+    })
+  },
+
+  // 使用上传的GeoTIFF执行反演
+  retrieveTiffChla(formData) {
+    return api.post('/modis/retrieve/tiff', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000
+    })
+  },
+
   downloadModisOutput(filename) {
     return api.get(`/modis/download/${filename}`, {
       responseType: 'blob'

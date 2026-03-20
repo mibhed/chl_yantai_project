@@ -29,6 +29,22 @@ import pandas as pd
 import warnings
 
 try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # Mock tqdm if not available
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def update(self, n=1):
+            pass
+
+try:
     import tifffile
     TIFFILE_AVAILABLE = True
 except ImportError:

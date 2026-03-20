@@ -6,7 +6,7 @@
         <el-card class="config-card">
           <template #header>
             <div class="card-header">
-              <span>📡 叶绿素a遥感反演</span>
+              <span>🛰️ 叶绿素a遥感反演</span>
             </div>
           </template>
 
@@ -19,15 +19,49 @@
           >
             <template #default>
               <ol style="padding-left: 18px; margin: 6px 0; line-height: 1.8;">
-                <li>上传 MODIS L2 数据文件 (.nc/.hdf)</li>
-                <li>设置研究区域和模型参数</li>
-                <li>点击「开始反演」</li>
+                <li><strong>方式A：</strong>点击下方「🚀 演示示例数据」按钮，使用内置模拟数据进行反演</li>
+                <li><strong>方式B：</strong>上传真实 MODIS L2 文件（.nc/.hdf）进行反演</li>
                 <li>查看统计结果并下载 Chl-a 分布图</li>
               </ol>
             </template>
           </el-alert>
 
-          <el-divider content-position="left">1. 上传 MODIS L2 文件</el-divider>
+          <!-- 演示按钮 -->
+          <el-divider content-position="left">🚀 快速演示（推荐）</el-divider>
+
+          <div class="demo-section">
+            <el-form :model="demoForm" label-width="100px" size="small">
+              <el-form-item label="模型类型">
+                <el-select v-model="demoForm.model_type" style="width: 100%;">
+                  <el-option label="随机森林 (RF)" value="RF" />
+                  <el-option label="极端随机树 (ET)" value="ET" />
+                  <el-option label="XGBoost (XGB)" value="XGB" />
+                  <el-option label="LightGBM (LGB)" value="LGB" />
+                  <el-option label="多元线性回归 (MLR)" value="MLR" />
+                  <el-option label="高斯过程 (GP)" value="GP" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="质量过滤">
+                <el-select v-model="demoForm.qa_max" style="width: 100%;">
+                  <el-option label="最佳像元 (QA=0)" :value="0" />
+                  <el-option label="良好+最佳 (QA≤1)" :value="1" />
+                  <el-option label="所有有效 (QA≤2)" :value="2" />
+                </el-select>
+              </el-form-item>
+            </el-form>
+            <el-button
+              type="primary"
+              size="large"
+              style="width: 100%; margin-top: 10px;"
+              :loading="demoLoading"
+              @click="runDemoRetrieval"
+            >
+              {{ demoLoading ? '反演中（请稍候）...' : '🚀 演示示例数据反演' }}
+            </el-button>
+            <p class="demo-hint">使用内置模拟MODIS L2数据，无需上传文件，立即体验完整反演流程</p>
+          </div>
+
+          <el-divider content-position="left">或上传真实数据</el-divider>
 
           <el-upload
             class="upload-modis"
@@ -54,7 +88,7 @@
             </el-tag>
           </div>
 
-          <el-divider content-position="left">2. 研究区域（烟台近岸）</el-divider>
+          <el-divider content-position="left">研究区域（烟台近岸）</el-divider>
 
           <el-form :model="regionForm" label-width="80px" size="small">
             <el-row :gutter="10">
@@ -107,7 +141,7 @@
             恢复默认烟台近岸范围
           </el-button>
 
-          <el-divider content-position="left">3. 模型参数</el-divider>
+          <el-divider content-position="left">模型参数</el-divider>
 
           <el-form :model="modelForm" label-width="80px" size="small">
             <el-form-item label="模型类型">
@@ -127,26 +161,19 @@
                 <el-option label="所有有效 (QA≤2)" :value="2" />
               </el-select>
             </el-form-item>
-            <el-form-item label="训练数据">
-              <el-switch
-                v-model="modelForm.use_synthetic"
-                active-text="合成数据"
-                inactive-text="实测数据"
-              />
-            </el-form-item>
           </el-form>
 
           <el-divider />
 
           <el-button
-            type="primary"
+            type="success"
             size="large"
             style="width: 100%;"
             :loading="retrieving"
             :disabled="!modisFile"
             @click="runRetrieval"
           >
-            {{ retrieving ? '反演中...' : '🚀 开始反演' }}
+            {{ retrieving ? '反演中...' : '📡 开始MODIS L2反演' }}
           </el-button>
 
           <div v-if="!modisFile" class="no-file-hint">
@@ -233,13 +260,18 @@
           </template>
 
           <el-alert
-            :title="retrievalResult.success ? '✅ 反演成功' : '❌ 反演失败'"
+            :title="retrievalResult.success ? '✅ 反演成功！' : '❌ 反演失败'"
             :type="retrievalResult.success ? 'success' : 'error'"
             show-icon
             :closable="false"
           />
 
           <div v-if="retrievalResult.success && retrievalResult.data">
+            <!-- 来源标识 -->
+            <el-tag v-if="retrievalResult.data.is_demo" type="warning" size="large" style="margin: 12px 0;">
+              📡 演示数据 | {{ retrievalResult.data.source_file }}
+            </el-tag>
+
             <!-- 统计信息 -->
             <el-row :gutter="16" class="stats-row" v-if="retrievalResult.data.statistics">
               <el-col :span="8">
@@ -322,7 +354,7 @@
 
             <!-- 预览图 -->
             <div v-if="previewUrl" class="preview-section">
-              <el-divider content-position="left">Chl-a 分布图预览</el-divider>
+              <el-divider content-position="left">🌊 Chl-a 分布图预览</el-divider>
               <div class="preview-container">
                 <img :src="previewUrl" alt="Chl-a 分布图" class="chl-preview" />
               </div>
@@ -361,9 +393,9 @@
 
         <!-- 空状态 -->
         <el-card v-if="!readResult && !retrievalResult" class="empty-card">
-          <el-empty description="请上传 MODIS L2 文件开始反演">
-            <el-button type="primary" @click="activeTab = 'modis'">
-              查看数据上传说明
+          <el-empty description="点击左侧「🚀 演示示例数据」按钮开始体验，或上传真实MODIS L2数据">
+            <el-button type="primary" @click="runDemoRetrieval">
+              🚀 立即演示
             </el-button>
           </el-empty>
         </el-card>
@@ -385,6 +417,7 @@ const modisFile = ref(null)
 const readResult = ref(null)
 const retrievalResult = ref(null)
 const retrieving = ref(false)
+const demoLoading = ref(false)
 const previewUrl = ref(null)
 
 const regionForm = ref({
@@ -397,7 +430,11 @@ const regionForm = ref({
 const modelForm = ref({
   model_type: 'RF',
   qa_max: 1,
-  use_synthetic: true,
+})
+
+const demoForm = ref({
+  model_type: 'RF',
+  qa_max: 1,
 })
 
 const bandStatsTable = computed(() => {
@@ -422,9 +459,6 @@ const handleModisChange = (file) => {
   readResult.value = null
   retrievalResult.value = null
   previewUrl.value = null
-
-  // 自动读取文件元数据
-  previewModis(file)
 }
 
 const previewModis = async (file) => {
@@ -455,6 +489,43 @@ const previewModis = async (file) => {
   }
 }
 
+// 演示反演 - 使用内置示例数据
+const runDemoRetrieval = async () => {
+  demoLoading.value = true
+  retrievalResult.value = null
+  previewUrl.value = null
+
+  try {
+    ElMessage.info('正在使用示例数据进行反演，请稍候（约30秒）...')
+
+    const res = await api.demoChlaRetrieve(
+      demoForm.value.model_type,
+      demoForm.value.qa_max
+    )
+    retrievalResult.value = res
+
+    if (res.success) {
+      ElMessage.success('演示反演完成！')
+
+      // 获取预览图 URL
+      if (res.data?.preview_path) {
+        previewUrl.value = `/api/modis/download/${res.data.preview_path}?t=${Date.now()}`
+      }
+    } else {
+      ElMessage.error(res.message || '演示反演失败')
+    }
+  } catch (e) {
+    console.error('Demo retrieval error:', e)
+    ElMessage.error('演示反演失败: ' + (e.response?.data?.detail || e.message || '未知错误'))
+    retrievalResult.value = {
+      success: false,
+      message: e.response?.data?.detail || e.message,
+    }
+  } finally {
+    demoLoading.value = false
+  }
+}
+
 const runRetrieval = async () => {
   if (!modisFile.value) {
     ElMessage.warning('请先上传 MODIS L2 文件')
@@ -470,7 +541,7 @@ const runRetrieval = async () => {
     formData.append('file', modisFile.value.raw)
     formData.append('model_type', modelForm.value.model_type)
     formData.append('qa_max', modelForm.value.qa_max)
-    formData.append('use_synthetic_model', modelForm.value.use_synthetic)
+    formData.append('use_synthetic_model', false)
     formData.append('satellite_type', 'MODIS')
 
     if (regionForm.value.lon_min && regionForm.value.lon_max) {
@@ -548,6 +619,21 @@ onMounted(async () => {
 
 .upload-modis {
   margin: 10px 0;
+}
+
+.demo-section {
+  background: linear-gradient(135deg, #f0f9eb 0%, #e8f5e9 100%);
+  border: 2px dashed #67c23a;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+}
+
+.demo-hint {
+  margin: 8px 0 0 0;
+  color: #67c23a;
+  font-size: 12px;
+  text-align: center;
 }
 
 .file-info {

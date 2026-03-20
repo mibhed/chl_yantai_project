@@ -90,6 +90,46 @@ app.add_middleware(
 )
 
 
+# ---- Request Models ----
+class ModelType(str, Enum):
+    RF = "RF"
+    ET = "ET"
+    XGB = "XGB"
+    LGB = "LGB"
+    MLR = "MLR"
+    GP = "GP"
+
+
+class RegionRequest(BaseModel):
+    region: str
+    year: int
+    month: int
+    model: str = "RF"
+
+
+class TrainingRequest(BaseModel):
+    model_type: str = "RF"
+    cv_folds: int = 5
+    use_synthetic: bool = True
+
+
+class ChlaRetrieveRequest(BaseModel):
+    satellite_type: str = "MODIS"
+    model_type: str = "RF"
+    qa_max: int = 1
+    use_synthetic_model: bool = True
+    lon_min: Optional[float] = None
+    lon_max: Optional[float] = None
+    lat_min: Optional[float] = None
+    lat_max: Optional[float] = None
+
+
+class AnalysisResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Dict[str, Any]] = None
+
+
 # ---- SSE Progress Stream ----
 @app.get("/api/training/stream")
 async def training_stream(stream_id: str):
@@ -179,45 +219,6 @@ async def start_training(request: TrainingRequest):
 
     asyncio.create_task(run_in_background())
     return {"stream_id": stream_id}
-
-
-class ModelType(str, Enum):
-    RF = "RF"
-    ET = "ET"
-    XGB = "XGB"
-    LGB = "LGB"
-    MLR = "MLR"
-    GP = "GP"
-
-
-class RegionRequest(BaseModel):
-    region: str
-    year: int
-    month: int
-    model: str = "RF"
-
-
-class TrainingRequest(BaseModel):
-    model_type: str = "RF"
-    cv_folds: int = 5
-    use_synthetic: bool = True
-
-
-class ChlaRetrieveRequest(BaseModel):
-    satellite_type: str = "MODIS"
-    model_type: str = "RF"
-    qa_max: int = 1
-    use_synthetic_model: bool = True
-    lon_min: Optional[float] = None
-    lon_max: Optional[float] = None
-    lat_min: Optional[float] = None
-    lat_max: Optional[float] = None
-
-
-class AnalysisResponse(BaseModel):
-    success: bool
-    message: str
-    data: Optional[Dict[str, Any]] = None
 
 
 @app.get("/")
@@ -1135,6 +1136,197 @@ async def get_modis_regions():
             ]
         }
     }
+
+
+@app.post("/api/modis/retrieve/demo")
+async def retrieve_demo_chla(
+    background_tasks: BackgroundTasks,
+    model_type: str = Form("RF"),
+    qa_max: int = Form(1),
+):
+    """
+    使用内置示例数据执行叶绿素a反演（用于演示）。
+
+    系统内置了模拟的MODIS L2格式GeoTIFF数据，
+    用户可以直接点击"演示"按钮体验完整的反演流程。
+
+    Parameters
+    ----------
+    model_type : str
+        模型类型：RF, ET, XGB, LGB, MLR, GP
+    qa_max : int
+        最大QA值
+
+    Returns
+    -------
+    JSON
+        反演统计结果、下载链接
+    """
+    try:
+        from src.geotiff_modis_reader import read_geotiff_as_modis_data
+
+        # 读取内置GeoTIFF示例数据
+        demo_tiff = BASE_DIR / "data" / "raw" / "mock_modis_yantai_20240315.tif"
+        if not demo_tiff.exists():
+            return {
+                "success": False,
+                "message": "示例数据不存在，请先生成",
+                "data": None
+            }
+
+        modis_data = read_geotiff_as_modis_data(demo_tiff)
+
+        # 区域裁剪（使用烟台近岸）
+        from src.modis_l2_reader import clip_to_region
+        yantai_region = get_yantai_region()
+        modis_data = clip_to_region(
+            modis_data,
+            (yantai_region["lon_min"], yantai_region["lon_max"]),
+            (yantai_region["lat_min"], yantai_region["lat_max"])
+        )
+
+        # 训练/获取模型
+        model, feature_cols = auto_train_from_samples(model_name=model_type, n_samples=1000)
+
+        # 执行反演
+        import time
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_name = f"chla_demo_{model_type}_{timestamp}"
+
+        result = retrieve_chla(
+            modis_data,
+            model,
+            feature_cols,
+            qa_max=qa_max,
+            output_name=output_name,
+            save_tiff=True,
+            save_preview=True,
+        )
+
+        tiff_path = None
+        preview_path = None
+        if "tiff" in result.get("output_files", {}):
+            tiff_path = result["output_files"]["tiff"].get("path")
+        if "preview" in result.get("output_files", {}):
+            preview_path = result["output_files"]["preview"]
+
+        return {
+            "success": True,
+            "message": "演示数据反演完成",
+            "data": {
+                "output_name": output_name,
+                "satellite_type": "MODIS (GeoTIFF Demo)",
+                "model_type": model_type,
+                "chl_a_shape": result.get("chl_a_shape"),
+                "statistics": result.get("statistics"),
+                "tiff_path": Path(tiff_path).name if tiff_path else None,
+                "preview_path": Path(preview_path).name if preview_path else None,
+                "is_demo": True,
+                "source_file": demo_tiff.name,
+            }
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "message": f"演示反演失败: {str(e)}",
+            "data": None
+        }
+
+
+@app.post("/api/modis/retrieve/tiff")
+async def retrieve_tiff_chla(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    model_type: str = Form("RF"),
+    qa_max: int = Form(1),
+):
+    """
+    上传GeoTIFF格式卫星影像并执行叶绿素a反演。
+
+    支持标准GeoTIFF格式的MODIS L2数据（包含Rrs波段和经纬度）。
+
+    Parameters
+    ----------
+    file : UploadFile
+        GeoTIFF格式卫星影像文件
+    model_type : str
+        模型类型
+    qa_max : int
+        最大QA值
+
+    Returns
+    -------
+    JSON
+        反演统计结果、下载链接
+    """
+    try:
+        from src.geotiff_modis_reader import read_geotiff_as_modis_data
+
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in ['.tif', '.tiff']:
+            raise HTTPException(status_code=400, detail="仅支持 .tif/.tiff 格式")
+
+        upload_dir = BASE_DIR / "data" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        tiff_path = upload_dir / f"input_{uuid.uuid4().hex[:8]}{suffix}"
+
+        with open(tiff_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # 读取GeoTIFF
+        modis_data = read_geotiff_as_modis_data(tiff_path)
+
+        # 训练模型
+        model, feature_cols = auto_train_from_samples(model_name=model_type, n_samples=1000)
+
+        # 执行反演
+        import time
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_name = f"chla_tiff_{model_type}_{timestamp}"
+
+        result = retrieve_chla(
+            modis_data,
+            model,
+            feature_cols,
+            qa_max=qa_max,
+            output_name=output_name,
+            save_tiff=True,
+            save_preview=True,
+        )
+
+        tiff_result_path = None
+        preview_path = None
+        if "tiff" in result.get("output_files", {}):
+            tiff_result_path = result["output_files"]["tiff"].get("path")
+        if "preview" in result.get("output_files", {}):
+            preview_path = result["output_files"]["preview"]
+
+        return {
+            "success": True,
+            "message": "GeoTIFF反演完成",
+            "data": {
+                "output_name": output_name,
+                "satellite_type": "GeoTIFF",
+                "model_type": model_type,
+                "chl_a_shape": result.get("chl_a_shape"),
+                "statistics": result.get("statistics"),
+                "tiff_path": Path(tiff_result_path).name if tiff_result_path else None,
+                "preview_path": Path(preview_path).name if preview_path else None,
+                "original_file": file.filename,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"GeoTIFF反演失败: {str(e)}")
+    finally:
+        tiff_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
